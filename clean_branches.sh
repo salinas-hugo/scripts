@@ -78,6 +78,36 @@ fi
 
 CURRENT_BRANCH=$(git branch --show-current)
 
+# ── Collect worktree-locked branches ──────────────────────────────────────────
+# Parallel arrays (bash 3.2-compatible — no associative arrays)
+WORKTREE_BRANCH_NAMES=()
+WORKTREE_PATHS=()
+
+while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+        wt_path="${line#worktree }"
+    elif [[ "$line" == branch\ refs/heads/* ]]; then
+        branch_name="${line#branch refs/heads/}"
+        WORKTREE_BRANCH_NAMES+=("$branch_name")
+        WORKTREE_PATHS+=("$wt_path")
+    fi
+done < <(git worktree list --porcelain)
+
+is_checked_out() {
+    local branch="$1"
+    for wt_branch in "${WORKTREE_BRANCH_NAMES[@]+"${WORKTREE_BRANCH_NAMES[@]}"}"; do
+        [[ "$wt_branch" == "$branch" ]] && return 0
+    done
+    return 1
+}
+
+get_worktree_path() {
+    local branch="$1"
+    for i in "${!WORKTREE_BRANCH_NAMES[@]}"; do
+        [[ "${WORKTREE_BRANCH_NAMES[$i]}" == "$branch" ]] && echo "${WORKTREE_PATHS[$i]}" && return
+    done
+}
+
 # ── Detect GitHub CLI + remote ────────────────────────────────────────────────
 HAS_GH=false
 REPO_SLUG=""
@@ -170,7 +200,11 @@ else
         branch="${MERGED_BRANCHES[$i]}"
         how="${MERGED_HOW[$i]}"
         suffix=""
-        [[ "$branch" == "$CURRENT_BRANCH" ]] && suffix="${DIM} ← current, will skip${NC}"
+        if [[ "$branch" == "$CURRENT_BRANCH" ]]; then
+            suffix="${DIM} ← current, will skip${NC}"
+        elif is_checked_out "$branch"; then
+            suffix="${DIM} ← worktree: $(get_worktree_path "$branch"), will skip${NC}"
+        fi
         printf "  ${GREEN}✓${NC}  %-45s ${DIM}via %s${NC}%b\n" "$branch" "$how" "$suffix"
     done
 fi
@@ -220,6 +254,11 @@ for i in "${!MERGED_BRANCHES[@]}"; do
 
     if [[ "$branch" == "$CURRENT_BRANCH" ]]; then
         echo -e "  ${YELLOW}skip${NC}    $branch  ${DIM}(checked out — switch away first)${NC}"
+        continue
+    fi
+
+    if is_checked_out "$branch"; then
+        echo -e "  ${YELLOW}skip${NC}    $branch  ${DIM}(checked out in worktree: $(get_worktree_path "$branch"))${NC}"
         continue
     fi
 
