@@ -7,9 +7,12 @@
 # The goal: keep only branches that are genuinely WIP locally.
 #
 # Usage:
-#   ./clean_branches.sh            # show status, ask before deleting
-#   ./clean_branches.sh --dry-run  # show status only, never delete
-#   ./clean_branches.sh --delete   # show status, delete without prompting
+#   ./clean_branches.sh [directory] [--dry-run | --delete]
+#
+#   ./clean_branches.sh                    # current dir, ask before deleting
+#   ./clean_branches.sh /path/to/repo      # target repo, ask before deleting
+#   ./clean_branches.sh --dry-run          # show status only, never delete
+#   ./clean_branches.sh /path/to/repo --delete
 
 set -euo pipefail
 
@@ -28,9 +31,9 @@ info() { echo -e "${CYAN}${BOLD}$*${NC}"; }
 dim()  { echo -e "${DIM}$*${NC}"; }
 
 usage() {
-    echo "Usage: $(basename "$0") [--dry-run | --delete]"
+    echo "Usage: $(basename "$0") [directory] [--dry-run | --delete]"
     echo
-    echo "  (no flag)   Show merged/WIP branches and prompt before deleting"
+    echo "  directory   Path to git repository (default: current directory)"
     echo "  --dry-run   Show merged/WIP branches, never delete"
     echo "  --delete    Show merged/WIP branches and delete without prompting"
     exit 1
@@ -39,15 +42,31 @@ usage() {
 # ── Argument parsing ──────────────────────────────────────────────────────────
 DRY_RUN=false
 AUTO_DELETE=false
+REPO_DIR=""
 
 for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=true ;;
         --delete)   AUTO_DELETE=true ;;
         -h|--help)  usage ;;
-        *) err "Unknown argument: $arg"; usage ;;
+        *)
+            if [[ -n "$REPO_DIR" ]]; then
+                err "Unknown argument: $arg"
+                usage
+            fi
+            REPO_DIR="$arg"
+            ;;
     esac
 done
+
+# ── Change to target directory ────────────────────────────────────────────────
+if [[ -n "$REPO_DIR" ]]; then
+    if [[ ! -d "$REPO_DIR" ]]; then
+        err "Directory does not exist: $REPO_DIR"
+        exit 1
+    fi
+    cd "$REPO_DIR"
+fi
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 if ! git rev-parse --git-dir &>/dev/null; then
@@ -203,7 +222,7 @@ else
         if [[ "$branch" == "$CURRENT_BRANCH" ]]; then
             suffix="${DIM} ← current, will skip${NC}"
         elif is_checked_out "$branch"; then
-            suffix="${DIM} ← worktree: $(get_worktree_path "$branch"), will skip${NC}"
+            suffix="${DIM} ← worktree: $(get_worktree_path "$branch"), will remove worktree${NC}"
         fi
         printf "  ${GREEN}✓${NC}  %-45s ${DIM}via %s${NC}%b\n" "$branch" "$how" "$suffix"
     done
@@ -258,8 +277,13 @@ for i in "${!MERGED_BRANCHES[@]}"; do
     fi
 
     if is_checked_out "$branch"; then
-        echo -e "  ${YELLOW}skip${NC}    $branch  ${DIM}(checked out in worktree: $(get_worktree_path "$branch"))${NC}"
-        continue
+        wt_path=$(get_worktree_path "$branch")
+        if git worktree remove --force "$wt_path" 2>/dev/null; then
+            echo -e "  ${CYAN}removed worktree${NC}  $wt_path"
+        else
+            echo -e "  ${RED}failed${NC}   $branch  ${DIM}(could not remove worktree: $wt_path)${NC}"
+            continue
+        fi
     fi
 
     if git branch -d "$branch" 2>/dev/null; then
